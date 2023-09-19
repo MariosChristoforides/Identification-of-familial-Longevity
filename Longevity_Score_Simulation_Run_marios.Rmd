@@ -1,0 +1,1050 @@
+---
+title: "Sim_Study_Draft1"
+author: "Marios Christoforides"
+date: '2022-04-01'
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+2. SIMULATION STUDY
+
+Evaluating Family Scores using Simulation Study
+
+THIS RMD FILE IS DESIGNED TO BE USED WITH 'Simulation_Setup_Functions.Rmd'
+
+Code from SimulationStudymLRC by Rodriguez Girondo
+
+This document is used for simulation studies designed to evaluate Family Scores in different scenarios.
+
+
+###Complete Data Simulation Code
+```{r}
+# perc: survival percentile
+#Simulation name guide
+#hv = high variation
+#lv = low variation
+#n = 500 for all
+#M = 500 for all
+#sigma = exp(-1) for all
+###Simulation - Complete Data
+
+source("Longevity_Score_Simulation_Setup_Functions_marios.R")
+M = 500
+n = c(250,250) 
+sigma = 0.2
+kvec = c(8,8) #large families
+# kvec = c(4,4) #small families
+# kvec = c(2,2) #only parents families
+
+threshold = TH_sig_expmin1
+out <- list()
+sim_name = 'large_fam_500'
+# sim_name = 'small_fam_500'
+# sim_name = 'paretns_fam_500'
+
+
+for(j in 1:M){
+  ###DATA GENERATION
+  set.seed(j)
+  data <- as.data.frame(Percentile.data_u(n=n, kvec = kvec, sigma = sigma))
+  ###SCORE CALCULATION
+  #uwLRC
+  uwLRC <- numeric()
+  id <- numeric()
+  for(i in 1:length(unique(data$id))){
+    uwLRC[i] <- sum(data$id == i & data$perc >= threshold)/sum(data$id == i)
+    id[i] <- i
+  }
+  # print(table(uwLRC))
+  
+  #mean family y
+  emp_mean <- numeric()
+  for(i in 1:length(unique(data$id))){
+    emp_mean[i] <- mean(data[data$id == i,'perc']) #change var name and y_expected to emp_mean and y respectively
+  }
+
+  #### mLRC
+  Y = data$perc > threshold
+  X = data$id
+  # par[1] = beta
+  # par[2] = log(sd)
+  par=c(1,1)
+  mLRC_mod <- nlminb(par, dbeta.mixed, Y=Y, X=X, control=list(trace=TRUE)) 
+  est = mLRC_mod$par
+  mLRC = sapply(1:length(unique(X)), function(i)
+  {predict.fam(est, unique(X)[i], nsamples=2000)})
+
+  # this is used for shorter function. Remove to run the full function  
+
+  #first col: optimized likelihood 
+  #2nd col: optimized beta 
+  #3rd col: optimized log(sd)
+
+#### Beta agnostic scores 
+  #Beta_ag
+  
+  data$LEFTCENSOR <- rep(0, nrow(data)) #1 if death observed below threshold.
+                                        #Beta_ag has no threshold so all = 0
+  data$perc[which(data$perc == 0)] <- 0.001 #reclassify zeros
+  data$perc[which(data$perc == 1)] <- 0.999 #reclassify ones
+  
+  Y <- data$perc #survival percentile
+  Z <- data$id #family id
+  B <- as.logical(data$LEFTCENSOR)
+  Death <- as.logical(rep(1,nrow(data))) #death indicator
+
+  estimates_ag = betareg.mixed(Y=Y, Death=Death, Z=Z, B=B) #estimate model parameters
+  print(estimates_ag)
+
+  Beta_ag = sapply(unique(Z), function(q) #calculate Beta Ag scores
+  {
+   Yclus = Y[Z==q]
+   Deathclus = Death[Z==q]
+   Bclus = B[Z==q]
+    as.numeric(predict.ranef(estimates_ag, Yclus=Yclus, Deathclus=Deathclus, Bclus=Bclus, nsamples=5000))
+  })
+  
+# 2nd column are values of beta 
+# 3rd column are values of phi
+# 4th column are values of s
+
+
+# Beta threshold scores
+  #Beta_TH
+  data$LEFTCENSOR_TH <- rep(0, nrow(data))
+  data$perc_TH <- rep(0,nrow(data)) #For observations with y < TH and death = 1, 
+                              #reassign scuh that y = TH-0.01 and LEFTCENSOR = 1 
+  
+  for(i in 1:nrow(data)){
+    if(data$perc[i] < threshold){
+      data$perc_TH[i] <- threshold-0.01
+      data$LEFTCENSOR_TH[i] <- 1
+    }else{
+      data$perc_TH[i] <- data$perc[i]
+    }
+  }
+
+  data$perc_TH[which(data$perc_TH == 0)] <- 0.01  #reclassify zeros
+  data$perc_TH[which(data$perc_TH == 1)] <- 0.99 #reclassify ones
+  
+  Y <- data$perc_TH
+  Z <- data$id
+  B <- as.logical(data$LEFTCENSOR_TH)
+  Death <- as.logical(rep(1,nrow(data)))
+  
+  
+  estimates_TH = betareg.mixed(Y=Y, Death=Death, Z=Z, B=B) #estimate model parameters
+  
+  
+  Beta_TH = sapply(unique(Z), function(q) #calculate beta TH scores 
+  {  
+    Yclus = Y[Z==q]
+    Deathclus = Death[Z==q]
+    Bclus = B[Z==q] 
+    as.numeric(predict.ranef(estimates_TH, Yclus=Yclus, Deathclus=Deathclus,Bclus=Bclus, nsamples=5000))
+  })
+# }
+# 2nd column are values of beta 
+# 3rd column are values of phi
+# 4th column are values of s
+
+  ##PERFORMANCE EVALUATION
+  ###SCORE PREDICTIONS OF LONG-LIVED FAMILIES
+
+  score <- data.frame(id = id, uwLRC = uwLRC, mLRC = mLRC, Beta_ag = Beta_ag, Beta_TH = Beta_TH, emp_mean = emp_mean)#Accuracy Metrics
+  
+  #true = get family id of top 10% lowest u
+  #untrue = get family id of the rest
+  
+  seg <- c(0.05,0.1)#,0.15,0.2,0.25,0.3) #Performance metrics for top 5%,10%,15%,20%,25%,30%
+
+  TP <- list()
+  TN <- list()
+  FP <- list()
+  FN <- list()
+  performance_df <- list()
+  for(i in 1:length(seg)){
+    
+    #Extract families predicted to be in top XX% by each score.
+    # If you use beta distribution decreasing should be T, otherwise F
+      true <- unique(data[order(data$u, decreasing = F),'id'])[1:round(length(unique(data$id))*seg[i])]
+      untrue <- unique(data[order(data$u, decreasing = F),'id']
+                       )[(round(length(unique(data$id))*seg[i])+1):length(unique(data$u))]
+      
+      #get family id of top 10% highest mLRC
+      mLRC_pred <- score[order(score$mLRC, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      mLRC_nonpred <- score[order(score$mLRC, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest uwLRC
+      uwLRC_pred <- score[order(score$uwLRC, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      uwLRC_nonpred <- score[order(score$uwLRC, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest Beta_ag
+      Beta_ag_pred <- score[order(score$Beta_ag, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      Beta_ag_nonpred <- score[order(score$Beta_ag, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest Beta_TH
+      Beta_TH_pred <- score[order(score$Beta_TH, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      Beta_TH_nonpred <- score[order(score$Beta_TH, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest emp_mean
+      emp_mean_pred <- score[order(score$emp_mean, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      emp_mean_nonpred <- score[order(score$emp_mean, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+  }
+
+      ###PERFORMANCE METRICS
+      #True Positives
+      mLRC_TP <- sum(mLRC_pred %in% true)/length(mLRC_pred)
+      uwLRC_TP <- sum(uwLRC_pred %in% true)/length(uwLRC_pred)
+      Beta_ag_TP <- sum(Beta_ag_pred %in% true)/length(Beta_ag_pred)
+      Beta_TH_TP <- sum(Beta_TH_pred %in% true)/length(Beta_TH_pred)
+      emp_mean_TP <- sum(emp_mean_pred %in% true)/length(emp_mean_pred)
+      
+      #True Negatives
+      mLRC_TN <- sum(mLRC_nonpred %in% untrue)/length(mLRC_nonpred)
+      uwLRC_TN <- sum(uwLRC_nonpred %in% untrue)/length(uwLRC_nonpred)
+      Beta_ag_TN <- sum(Beta_ag_nonpred %in% untrue)/length(Beta_ag_nonpred)
+      Beta_TH_TN <- sum(Beta_TH_nonpred %in% untrue)/length(Beta_TH_nonpred)
+      emp_mean_TN <- sum(emp_mean_nonpred %in% untrue)/length(emp_mean_nonpred)
+      
+      #False Positive
+      mLRC_FP <- 1-mLRC_TN
+      uwLRC_FP <- 1-uwLRC_TN
+      Beta_ag_FP <- 1-Beta_ag_TN
+      Beta_TH_FP <- 1-Beta_TH_TN
+      emp_mean_FP <- 1-emp_mean_TN
+      
+      #False Negative
+      mLRC_FN <- 1-mLRC_TP
+      uwLRC_FN <- 1-uwLRC_TP
+      Beta_ag_FN <- 1-Beta_ag_TP
+      Beta_TH_FN <- 1-Beta_TH_TP
+      emp_mean_FN <- 1-emp_mean_TP
+      
+      #create lists of each metric
+      TP[[i]] <- c(mLRC_TP,uwLRC_TP,Beta_ag_TP,Beta_TH_TP,emp_mean_TP)
+      TN[[i]] <- c(mLRC_TN,uwLRC_TN,Beta_ag_TN,Beta_TH_TN,emp_mean_TN)
+      FP[[i]] <- c(mLRC_FP,uwLRC_FP,Beta_ag_FP,Beta_TH_FP,emp_mean_FP)
+      FN[[i]] <- c(mLRC_FN,uwLRC_FN,Beta_ag_FN,Beta_TH_FN,emp_mean_FN)
+      performance_df[[i]] <- data.frame(TP=TP[[i]],TN=TN[[i]],FP=FP[[i]],FN=FN[[i]], row.names = c('mLRC','uwLRC','Beta_ag','Beta_TH','emp_mean'))
+
+  #SPEARMAN (RANK-BASED) CORRELATIONS: SCORES VS TRUE
+  cor_mLRC <- cor(as.matrix(score[,'mLRC']),as.matrix(unique(data[,'u'])), method = 'spearman')
+  cor_uwLRC <- cor(as.matrix(score[,'uwLRC']),as.matrix(unique(data[,'u'])), method = 'spearman')
+  cor_Beta_ag <- cor(as.matrix(score[,'Beta_ag']),as.matrix(unique(data[,'u'])), method = 'spearman')
+  cor_Beta_TH <- cor(as.matrix(score[,'Beta_TH']),as.matrix(unique(data[,'u'])), method = 'spearman')
+  cor_emp_mean <- cor(as.matrix(score[,'emp_mean']),as.matrix(unique(data[,'u'])), method = 'spearman')
+  cor_spearman_true <- c("cor_mLRC"=cor_mLRC,'cor_uwLRC'=cor_uwLRC,'cor_Beta_ag'=cor_Beta_ag,
+                         'cor_Beta_TH'=cor_Beta_TH, 'cor_emp_mean'=cor_emp_mean)
+  
+  #SPEARMAN CORRELATIONS: SCORES VS SCORES
+  #let 1=mLRC, 2=uwLRC, 3=Beta_ag, 4=Beta_TH
+  cor12 <- cor(score[,'mLRC'],score[,'uwLRC'], method = 'spearman')
+  cor13 <- cor(as.matrix(score[,'mLRC']),as.matrix(score[,'Beta_ag']), method = 'spearman')
+  cor14 <- cor(as.matrix(score[,'mLRC']),as.matrix(score[,'Beta_TH']), method = 'spearman')
+  cor15 = cor(as.matrix(score[,'mLRC']),as.matrix(score[,'emp_mean']), method = 'spearman')
+  cor23 <- cor(score[,'uwLRC'],score[,'Beta_ag'], method = 'spearman')
+  cor24 <- cor(score[,'uwLRC'],score[,'Beta_TH'], method = 'spearman')
+  cor25 = cor(as.matrix(score[,'uwLRC']),as.matrix(score[,'emp_mean']), method = 'spearman')
+  cor34 <- cor(as.matrix(score[,'Beta_ag']),as.matrix(score[,'Beta_TH']), method = 'spearman')
+  cor35 = cor(as.matrix(score[,'Beta_ag']),as.matrix(score[,'emp_mean']), method = 'spearman')
+  cor45 = cor(as.matrix(score[,'emp_mean']),as.matrix(score[,'Beta_TH']), method = 'spearman')
+  cor_spearman_scores <- c(cor12,cor13,cor14,cor15,cor23,cor24,cor25,cor34,cor35,cor45)
+  
+  #FINAL COMPILATION OF INFORMATION
+  out[[j]] <- list(mLRC_mod, estimates_ag, estimates_TH, score, performance_df, cor_spearman_true, cor_spearman_scores)
+  file <- list(out[[j]], data$u)
+  save(file, file = paste0(j,sim_name,'.rData'))
+  print(out[[j]])
+}
+
+
+###Procedure for saving simulation results
+
+# small_fam_m500 <- out
+# save(small_fam_m500, file = 'parents_fam_500.rData')#SAVE SIMULATION RESULTS
+
+large_fam_m500 <- out
+save(large_fam_m500, file = 'large_fam_500.rData')#SAVE SIMULATION RESULTS
+
+# parents_fam_m500 <- out
+# save(parents_fam_m500, file = 'parents_fam_500.rData')#SAVE SIMULATION RESULTS
+
+
+
+ 
+```
+
+## Plot for correlation betwwen scores and random effect u
+
+
+## Plot for TPR
+
+```{r}
+## gompertz
+#### BE CAREFUL WITH THE NAME INSIDE THE DATAFRAME!!!!!!
+load("C:\\Users\\Marios\\OneDrive\\Υπολογιστής\\thesis\\Simulation_Scripts\\simulations\\small_fam_500.rData")
+
+fam_rates = numeric()
+for(i in 1:M){
+  fam_rates[i] = as.data.frame(small_fam_m500[[i]][[5]][[2]][1])
+  # print(fam_rates)
+}
+#### uwLRC
+tpr_uwLRC = numeric()
+for (i in 1:M) {
+  tpr_uwLRC[i] = fam_rates[[i]][2]
+  # print(tpr_uwLRC)
+}
+uwLRC_mean = mean(tpr_uwLRC)
+uwLRC_sd = sd(tpr_uwLRC)
+
+#### mLRC
+tpr_mLRC = numeric()
+for (i in 1:M) {
+  tpr_mLRC[i] = fam_rates[[i]][1]
+  # print(tpr_mLRC)
+}
+mLRC_mean = mean(tpr_mLRC)
+mLRC_sd = sd(tpr_mLRC)
+
+### empirical mean
+tpr_emp = numeric()
+for (i in 1:M) {
+  tpr_emp[i] = fam_rates[[i]][5]
+  # print(tpr_emp)
+}
+e_mean = mean(tpr_emp)
+e_sd = sd(tpr_emp)
+
+tpr_beta_ag = numeric()
+for (i in 1:M) {
+  tpr_beta_ag[i] = fam_rates[[i]][3]
+  # print(tpr_beta_ag)
+}
+beta_ag_mean = mean(tpr_beta_ag)
+beta_ag_sd = sd(tpr_beta_ag)
+
+### beta threshold
+tpr_betath = numeric()
+for (i in 1:M) {
+  tpr_betath[i] = fam_rates[[i]][4]
+  # print(tpr_betathRC)
+}
+betath_mean = mean(tpr_betath)
+betath_sd = sd(tpr_betath)
+
+### The plots are adjusted based on the family size of the simulation ###
+
+plot(density(tpr_uwLRC), col = "red",main = "TPR(4 members gompertz)", ylim = c(0,12), xlim = c(0.18,0.9))
+lines(density(tpr_mLRC), col = "blue", main = "mLRC")
+lines(density(tpr_beta_ag), col = "magenta", main = "Beta_ag")
+lines(density(tpr_betath), col = "orange", main = "Beta threshold")
+lines(density(tpr_emp), col = "green", main = "Emperical Mean")
+points(uwLRC_mean, 6.8, col = "red", pch = 4)
+points(mLRC_mean, 5.7, col = "blue", pch = 4)
+points(beta_ag_mean, 7, col = "magenta", pch = 4)
+points(betath_mean, 7.6, col = "orange", pch = 4)
+points(e_mean, 6.9, col = "green", pch = 4)
+text(uwLRC_mean, 9.5, "051", col = "red")
+text(mLRC_mean, 8.5, "0.51", col = "blue")
+text(beta_ag_mean, 8.6, "0.57", col = "magenta")
+text(betath_mean, 8.8, "0.62", col = "orange")
+text(e_mean, 7.5, "0.47", col = "green")
+legend("topright", c("mLRC(μ: 0.51, σ: 0.07)", "uwLRC(μ: 0.51, σ: 0.06)", "Beta_ag(μ: 0.57, σ: 0.06)", "Beta_th(μ: 0.62, σ: 0.06)",  "emp_m(μ: 0.45, σ: 0.07)"), lty=1, cex=0.9,col=c("blue", "red", "magenta", "orange", "green"))
+
+
+
+
+
+
+```
+
+
+### Incomplete data Simulation Code
+Ignore participants with survival percentile < 0.5 and calculate survival percentile for the rest of the censored observations
+```{r}
+
+source("C:\\Users\\Marios\\OneDrive\\Υπολογιστής\\thesis\\Simulation_Scripts\\simulations\\Longevity_Score_Simulation_Setup_Functions_marios.R")
+
+#Simulation name guide
+#hv = high variation
+#lv = low variation
+#n = 500 for all
+#M = 500 for all
+#sigma = exp(-1) for all
+###Simulation - Complete Data
+
+#Uncomment variables and specify values
+M = 500
+n = c(250,250)
+sigma = 0.3
+# kvec = c(8,8)
+# kvec = c(4,4)
+kvec = c(2,2)
+threshold = TH_sig_expmin1
+sim_name = 'simcens2'
+
+
+#Majority of this code is identical to Complete Data scenario. 
+#Refer to annotations in that section.
+out_cens <- list()
+for(j in 1:M) {
+  ###DATA GENERATION
+  set.seed(j)
+  data <- as.data.frame(Percentile.data.cens.beta(n=n, kvec=kvec, sigma = sigma, censoring = T))
+  data_lrc = as.data.frame(Percentile.data.cens(n=n, kvec=kvec, sigma = sigma, censoring = T))
+  threshold <- threshold
+  ###SCORE CALCULATION
+  #uwLRC
+  
+  # data_lrc = data_lrc[!(data_lrc$d == 0 & data_lrc$perc < threshold | is.na(data_lrc$y)) ,  ]
+  data_lrc = data_lrc[!(data_lrc$perc < 0.5 | is.na(data_lrc$y)) ,  ]
+  
+  #### print family sizes
+  #### distribution of random effects data_lrc and data
+  
+  
+  uwLRC <- numeric()
+  id <- numeric()
+  for(i in 1:length(unique(data_lrc$id))){
+    uwLRC[i] <- sum(data_lrc$id == i & data_lrc$perc[i] >= threshold)/length(data_lrc$id == i)
+    id[i] <- i
+  }
+  # print(uwLRC)
+  
+  #mean family y
+  emp_mean <- numeric()
+  for(i in 1:length(unique(data_lrc$id))){
+    emp_mean[i] <- mean(data_lrc[data_lrc$id == unique(data_lrc$id)[i],'perc'])
+  }
+  print(emp_mean)
+
+  #mLRC
+  Y = data_lrc$perc > threshold
+  X = data_lrc$id
+  
+  par=c(1,1)
+  mLRC_mod <- nlminb(par, dbeta.mixed, Y=Y, X=X, control=list(trace=TRUE)) 
+  est = mLRC_mod$par
+  
+  mLRC = sapply(1:length(unique(X)), function(i)
+  {#print(i)
+  predict.fam(est, unique(X)[i], nsamples=2000)})
+
+  
+  
+  ###### FILL NON EXISTED FAMILY IDS WITH NA
+  # create logical vector indicating missing id values
+  missing_ids <- !(unique(data$id) %in% unique(data_lrc$id))
+  
+  # get indexes of missing id values
+  missing_indexes <- which(missing_ids)
+  # print(missing_indexes)
+  
+  # add NA values at missing indexes
+  uwLRC <- append(uwLRC, rep(NA, length(missing_indexes)))
+  emp_mean <- append(emp_mean, rep(NA, length(missing_indexes)))
+  mLRC <- append(mLRC, rep(NA, length(missing_indexes)))
+  
+  # shift the existing values to make room for the NAs
+  shifted_indexes <- missing_indexes + 1
+  uwLRC[shifted_indexes] <- uwLRC[missing_indexes]
+  emp_mean[shifted_indexes] <- emp_mean[missing_indexes]
+  mLRC[shifted_indexes] <- mLRC[missing_indexes]
+  
+  # add NA values at missing indexes
+  uwLRC[missing_indexes] <- NA
+  emp_mean[missing_indexes] <- NA
+  mLRC[missing_indexes] <- NA
+  if(length(uwLRC) > 500){
+    uwLRC = uwLRC[-length(mLRC)]
+    mLRC = mLRC[-length(uwLRC)]
+    emp_mean = emp_mean[-length(emp_mean)]
+  }
+
+  #Beta_ag
+  data$LEFTCENSOR <- rep(0, nrow(data))
+  data$perc[which(data$perc == 0)] <- 0.01 
+  data$perc[which(data$perc == 1)] <- 0.99
+
+  Y <- data$perc
+  Z <- data$id
+  B <- as.logical(data$LEFTCENSOR)
+  Death <- data$d
+
+  
+  estimates_ag = betareg.mixed(Y=Y, Death=Death, Z=Z, B=B)
+
+  Beta_ag = sapply(unique(Z), function(q) 
+  {  
+   Yclus = Y[Z==q]
+   Deathclus = Death[Z==q]
+   Bclus = B[Z==q] 
+    as.numeric(predict.ranef(estimates_ag, Yclus=Yclus, Deathclus=Deathclus,Bclus=Bclus, nsamples=5000))
+  })
+
+  #Beta_TH
+  data$LEFTCENSOR_TH <- rep(0, nrow(data))
+  data$perc_TH <- rep(0,nrow(data))
+  
+  for(i in 1:nrow(data)){
+    if(data$perc[i] < threshold){ 
+      data$perc_TH[i] <- threshold-0.01
+      data$LEFTCENSOR_TH[i] <- 1
+    }else{
+      data$perc_TH[i] = data$perc[i]
+    }
+    
+  }
+  data$perc_TH[which(data$perc_TH == 0)] <- 0.01 
+  data$perc_TH[which(data$perc_TH == 1)] <- 0.99
+ 
+  Y <- data$perc_TH
+  Z <- data$id
+  B <- as.logical(data$LEFTCENSOR_TH)
+  Death <- data$d
+  
+  estimates_TH = betareg.mixed(Y=Y, Death=Death, Z=Z, B=B)
+  
+ 
+  Beta_TH = sapply(unique(Z), function(q) 
+  {  
+    Yclus = Y[Z==q]
+    Deathclus = Death[Z==q]
+    Bclus = B[Z==q] 
+    as.numeric(predict.ranef(estimates_TH, Yclus=Yclus, Deathclus=Deathclus,Bclus=Bclus, nsamples=5000))
+  })
+ 
+  
+  ###SCORE PREDICTIONS OF LONG-LIVED FAMILIES
+  #score df
+  score <- data.frame(id = unique(data$id), uwLRC = uwLRC, mLRC = mLRC, Beta_ag = Beta_ag, Beta_TH = Beta_TH, emp_mean = emp_mean)
+  # View(score)
+  
+  data_lrc = data
+  data_lrc[data$perc == 0 & data$perc < threshold, ] <- NA   
+  data_lrc[data$u == 0 & data$perc < threshold, ] <- NA   
+  data_lrc[data$id == 0 & data$perc < threshold, ] <- NA   
+  
+  #Accuracy Metrics
+  #true = get family id of top 10% lowest u
+  seg <- c(0.05,0.1)#,0.15,0.2,0.25,0.3)
+
+  TP <- list()
+  TN <- list()
+  FP <- list()
+  FN <- list()
+  performance_df <- list()
+  for(i in 1:length(seg)){
+      true <- unique(data[order(data$u, decreasing = F),'id'])[1:round(length(unique(data$id))*seg[i])]
+      untrue <- unique(data[order(data$u, decreasing = F),'id'])[(round(length(unique(data$id))*seg[i])+1):length(unique(data$u))]
+      
+      true_lrc <- unique(data_lrc[order(data_lrc$u, decreasing = F),'id'])[1:round(length(unique(data_lrc$id))*seg[i])]
+      untrue_lrc <- unique(data_lrc[order(data_lrc$u, decreasing = F),'id'])[(round(length(unique(data_lrc$id))*seg[i])+1):length(unique(data_lrc$u))]
+      
+      #get family id of top 10% highest mLRC
+      mLRC_pred <- score[order(score$mLRC, decreasing = T),'id'][1:round(length(unique(data_lrc$id))*seg[i])]
+      mLRC_nonpred <- score[order(score$mLRC, decreasing = T),'id'][(round(length(unique(data_lrc$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest uwLRC
+      uwLRC_pred <- score[order(score$uwLRC, decreasing = T),'id'][1:round(length(unique(data_lrc$id))*seg[i])]
+      uwLRC_nonpred <- score[order(score$uwLRC, decreasing = T),'id'][(round(length(unique(data_lrc$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest Beta_ag
+      Beta_ag_pred <- score[order(score$Beta_ag, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      Beta_ag_nonpred <- score[order(score$Beta_ag, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest Beta_TH
+      Beta_TH_pred <- score[order(score$Beta_TH, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      Beta_TH_nonpred <- score[order(score$Beta_TH, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest emp_mean
+      emp_mean_pred <- score[order(score$emp_mean, decreasing = T),'id'][1:round(length(unique(data_lrc$id))*seg[i])]
+      emp_mean_nonpred <- score[order(score$emp_mean, decreasing = T),'id'][(round(length(unique(data_lrc$id))*seg[i])+1):nrow(score)]
+
+  
+      ###PERFORMANCE METRICS
+      #True Positives
+      mLRC_TP <- sum(mLRC_pred %in% true_lrc)/length(mLRC_pred)
+      uwLRC_TP <- sum(uwLRC_pred %in% true_lrc)/length(uwLRC_pred)
+      Beta_ag_TP <- sum(Beta_ag_pred %in% true)/length(Beta_ag_pred)
+      Beta_TH_TP <- sum(Beta_TH_pred %in% true)/length(Beta_TH_pred)
+      emp_mean_TP <- sum(emp_mean_pred %in% true_lrc)/length(emp_mean_pred)
+      #True Negatives
+      mLRC_TN <- sum(mLRC_nonpred %in% untrue_lrc)/length(mLRC_nonpred)
+      uwLRC_TN <- sum(uwLRC_nonpred %in% untrue_lrc)/length(uwLRC_nonpred)
+      Beta_ag_TN <- sum(Beta_ag_nonpred %in% untrue)/length(Beta_ag_nonpred)
+      Beta_TH_TN <- sum(Beta_TH_nonpred %in% untrue)/length(Beta_TH_nonpred)
+      emp_mean_TN <- sum(emp_mean_nonpred %in% untrue_lrc)/length(emp_mean_nonpred)
+      #False Positive
+      mLRC_FP <- 1-mLRC_TN
+      uwLRC_FP <- 1-uwLRC_TN
+      Beta_ag_FP <- 1-Beta_ag_TN
+      Beta_TH_FP <- 1-Beta_TH_TN
+      emp_mean_FP <- 1 - emp_mean_TN
+      #False Negative
+      mLRC_FN <- 1-mLRC_TP
+      uwLRC_FN <- 1-uwLRC_TP
+      Beta_ag_FN <- 1-Beta_ag_TP
+      Beta_TH_FN <- 1-Beta_TH_TP
+      emp_mean_FN <- 1-emp_mean_TP
+      
+      TP[[i]] <- c(mLRC_TP,uwLRC_TP,Beta_ag_TP,Beta_TH_TP, emp_mean_TP)
+      TN[[i]] <- c(mLRC_TN,uwLRC_TN,Beta_ag_TN,Beta_TH_TN, emp_mean_TN)
+      FP[[i]] <- c(mLRC_FP,uwLRC_FP,Beta_ag_FP,Beta_TH_FP, emp_mean_FP)
+      FN[[i]] <- c(mLRC_FN,uwLRC_FN,Beta_ag_FN,Beta_TH_FN, emp_mean_FN)
+      performance_df[[i]] <- data.frame(TP=TP[[i]],TN=TN[[i]],FP=FP[[i]],FN=FN[[i]], row.names = c('mLRC','uwLRC','Beta_ag','Beta_TH', 'emp_mean'))
+  }
+  
+  #SPEARMAN (RANK-BASED) CORRELATIONS: SCORES VS TRUE
+  
+  cor_mLRC <- cor(score[,'mLRC'],unique(data_lrc[,'u']), method = 'spearman', use="pairwise.complete.obs")
+  cor_uwLRC <- cor(score[,'uwLRC'],unique(data_lrc[,'u']), method = 'spearman', use="pairwise.complete.obs")
+  cor_Beta_ag <- cor(score[,'Beta_ag'],unique(data[,'u']), method = 'spearman', use="pairwise.complete.obs")
+  cor_Beta_TH <- cor(score[,'Beta_TH'],unique(data[,'u']), method = 'spearman', use="pairwise.complete.obs")
+  cor_emp_mean <- cor(score[,'emp_mean'],unique(data_lrc[,'u']), method = 'spearman', use="pairwise.complete.obs")
+  
+
+  # add NA values at missing indexes
+  # cor_mLRC[missing_indexes] <- NA
+  # cor_emp_mean[missing_indexes] <- NA
+  # cor_uwLRC[missing_indexes] <- NA
+  
+  cor_spearman_true <- c("cor_mLRC"=cor_mLRC, 'cor_uwLRC'=cor_uwLRC,'cor_Beta_ag'=cor_Beta_ag,'cor_Beta_TH'=cor_Beta_TH,
+                         'cor_emp_mean'= cor_emp_mean)
+
+  #SPEARMAN CORRELATIONS: SCORES VS SCORES
+  #let 1=mLRC, 2=uwLRC, 3=Beta_ag, 4=Beta_TH
+  cor12 <- cor(score[,'mLRC'],score[,'uwLRC'], method = 'spearman', use="pairwise.complete.obs")
+  cor13 <- cor(score[,'mLRC'],score[,'Beta_ag'], method = 'spearman', use="pairwise.complete.obs")
+  cor14 <- cor(score[,'mLRC'],score[,'Beta_TH'], method = 'spearman', use="pairwise.complete.obs")
+  cor23 <- cor(score[,'uwLRC'],score[,'Beta_ag'], method = 'spearman', use="pairwise.complete.obs")
+  cor24 <- cor(score[,'uwLRC'],score[,'Beta_TH'], method = 'spearman', use="pairwise.complete.obs")
+  cor34 <- cor(score[,'Beta_ag'],score[,'Beta_TH'], method = 'spearman', use="pairwise.complete.obs")
+  cor_spearman_scores <- c(cor12,cor13,cor14,cor23,cor24,cor34)
+
+  
+  #FINAL COMPILATION OF INFORMATION
+  out_cens[[j]] <- list(mLRC_mod,estimates_ag,estimates_TH,score, performance_df, cor_spearman_true, cor_spearman_scores)
+  file <- out_cens[[j]]
+  save(file, file = paste0(j,sim_name,'.rData'))
+  print(out_cens[[j]])
+}
+
+
+sim_cens2 <- out_cens #RENAME OUT WITH PARAMETERS
+save(sim_cens2, file = 'simcens2.rData') #SAVE SIMULATION RESULTS
+
+
+
+
+```
+
+```{r}
+### TPR
+## gompertz
+#### BE CAREFUL WITH THE NAME INSIDE THE DATAFRAME!!!!!!
+library(dplyr)
+load("C:\\Users\\Marios\\OneDrive\\Υπολογιστής\\thesis\\Simulation_Scripts\\simulations\\simcens8.rData")
+fam_rates = numeric()
+for (i in 1:M){
+  fam_rates[i] = as.data.frame(sim_cens8[[i]][[5]][[2]][1])
+  # print(fam_rates)
+}
+#### mLRC
+tpr_mLRC = numeric()
+for (i in 1:M) {
+  tpr_mLRC[i] = fam_rates[[i]][1]
+  # print(tpr_mLRC)
+}
+mLRC_mean = mean(tpr_mLRC)
+mLRC_sd = sd(tpr_mLRC)
+
+#### uwLRC
+tpr_uwLRC = numeric()
+for (i in 1:M) {
+  tpr_uwLRC[i] = fam_rates[[i]][2]
+  # print(tpr_uwLRC)
+}
+uwLRC_mean = mean(tpr_uwLRC)
+uwLRC_sd = sd(tpr_uwLRC)
+#### beta ag
+tpr_beta_ag = numeric()
+for (i in 1:M) {
+  tpr_beta_ag[i] = fam_rates[[i]][3]
+  # print(tpr_beta_ag)
+}
+beta_ag_mean = mean(tpr_beta_ag)
+beta_ag_sd = sd(tpr_beta_ag)
+
+#### beta threshold
+tpr_betath = numeric()
+for (i in 1:M) {
+  tpr_betath[i] = fam_rates[[i]][4]
+  # print(tpr_betath)
+}
+betath_mean = mean(tpr_betath)
+betath_sd = sd(tpr_betath)
+
+#### empirical mean
+tpr_emp = numeric()
+for (i in 1:M) {
+  tpr_emp[i] = fam_rates[[i]][5]
+  # print(tpr_emp)
+}
+e_mean = mean(tpr_emp)
+e_sd = sd(tpr_emp)
+
+### The plots are adjusted based on the family size of the simulation ###
+
+plot(density(tpr_uwLRC), col = "red",main = "TPR(8 members excluding percentiles < 0.5)", ylim = c(0,18), xlim = c(0,0.5))
+lines(density(tpr_mLRC), col = "blue", main = "mLRC")
+lines(density(tpr_beta_ag), col = "magenta", main = "Beta_ag")
+lines(density(tpr_betath), col = "orange", main = "Beta threshold")
+lines(density(tpr_emp), col = "green", main = "Emperical Mean")
+points(uwLRC_mean, 9.1, col = "red", pch = 4)
+points(mLRC_mean, 8.7, col = "blue", pch = 4)
+points(beta_ag_mean, 6.5, col = "magenta", pch = 4)
+points(betath_mean, 8.7, col = "orange", pch = 4)
+points(e_mean, 11.3, col = "green", pch = 4)
+text(uwLRC_mean, 12.5, "0.10", col = "red")
+text(mLRC_mean, 14, "0.10", col = "blue")
+text(beta_ag_mean, 8.1, "0.33", col = "magenta")
+text(betath_mean, 9.9, "0.27", col = "orange")
+text(e_mean, 16, "0.10", col = "green")
+legend("topright", c("mLRC(μ: 0.10, σ: 0.04)", "uwLRC(μ: 0.10, σ: 0.04)", "Beta_ag(μ: 0.33, σ: 0.06)", "Beta_th(μ: 0.27, σ: 0.06)",  "emp_m(μ: 0.10, σ: 0.05)"), lty=1, cex=1,col=c("blue", "red", "magenta", "orange", "green"))
+
+
+```
+
+
+
+## Incomplete data
+Calculate the expected percentile for every observation
+
+```{r}
+source("C:\\Users\\Marios\\OneDrive\\Υπολογιστής\\thesis\\Simulation_Scripts\\simulations\\Longevity_Score_Simulation_Setup_Functions_marios.R")
+
+M = 500
+n = c(250,250)
+sigma = 0.3
+# kvec = c(8,8)
+# kvec = c(4,4)
+kvec = c(2,2)
+threshold = TH_sig_expmin1
+sim_name = 'simcensexp2'
+
+out <- list()
+for(j in 1:M) {
+  ###DATA GENERATION
+  set.seed(j)
+  data <- as.data.frame(Percentile.data.cens.beta(n=n, kvec=kvec, sigma = sigma, censoring = T))
+  data_lrc = as.data.frame(Percentile.data.cens(n=n, kvec=kvec, sigma = sigma, censoring = T))
+  threshold <- threshold
+  ###SCORE CALCULATION
+
+  #uwLRC
+  uwLRC <- numeric()
+  id <- numeric()
+  for(i in 1:length(unique(data$id))){
+    uwLRC[i] <- sum(data$id == i & data$perc[i] >= threshold)/length(data$id == i)
+    id[i] <- i
+  }
+  # print(uwLRC)
+  
+  #mean family y
+  emp_mean <- numeric()
+  for(i in 1:length(unique(data$id))){
+    emp_mean[i] <- mean(data_lrc[data$id == unique(data$id)[i],'perc'])
+  }
+  # print(emp_mean)
+  
+  #mLRC
+  Y = data$perc > threshold
+  X = data$id
+  
+  par=c(1,1)
+  mLRC_mod <- nlminb(par, dbeta.mixed, Y=Y, X=X, control=list(trace=TRUE)) 
+  est = mLRC_mod$par
+  
+  mLRC = sapply(1:length(unique(X)), function(i)
+  {#print(i)
+  predict.fam(est, unique(X)[i], nsamples=2000)})
+  
+  #Beta_ag
+  data$LEFTCENSOR <- rep(0, nrow(data))
+  data$perc[which(data$perc == 0)] <- 0.01 
+  data$perc[which(data$perc == 1)] <- 0.99
+
+  Y <- data$perc
+  Z <- data$id
+  B <- as.logical(data$LEFTCENSOR)
+  Death <- data$d
+
+  
+  estimates_ag = betareg.mixed(Y=Y, Death=Death, Z=Z, B=B)
+
+  Beta_ag = sapply(unique(Z), function(q) 
+  {  
+   Yclus = Y[Z==q]
+   Deathclus = Death[Z==q]
+   Bclus = B[Z==q] 
+    as.numeric(predict.ranef(estimates_ag, Yclus=Yclus, Deathclus=Deathclus,Bclus=Bclus, nsamples=5000))
+  })
+
+  #Beta_TH
+  data$LEFTCENSOR_TH <- rep(0, nrow(data))
+  data$perc_TH <- rep(0,nrow(data))
+  
+  for(i in 1:nrow(data)){
+    if(data$perc[i] < threshold){ 
+      data$perc_TH[i] <- threshold-0.01
+      data$LEFTCENSOR_TH[i] <- 1
+    }else{
+      data$perc_TH[i] = data$perc[i]
+    }
+    
+  }
+  data$perc_TH[which(data$perc_TH == 0)] <- 0.01 
+  data$perc_TH[which(data$perc_TH == 1)] <- 0.99
+ 
+  Y <- data$perc_TH
+  Z <- data$id
+  B <- as.logical(data$LEFTCENSOR_TH)
+  Death <- data$d
+  
+  estimates_TH = betareg.mixed(Y=Y, Death=Death, Z=Z, B=B)
+  
+ 
+  Beta_TH = sapply(unique(Z), function(q) 
+  {  
+    Yclus = Y[Z==q]
+    Deathclus = Death[Z==q]
+    Bclus = B[Z==q] 
+    as.numeric(predict.ranef(estimates_TH, Yclus=Yclus, Deathclus=Deathclus,Bclus=Bclus, nsamples=5000))
+  })
+  
+  ###SCORE PREDICTIONS OF LONG-LIVED FAMILIES
+  #score df
+  score <- data.frame(id = id, uwLRC = uwLRC, mLRC = mLRC, Beta_ag = Beta_ag, Beta_TH = Beta_TH, emp_mean = emp_mean)
+  #Accuracy Metrics
+  #true = get family id of top 10% lowest u
+  
+  u_vec <- numeric()
+  for(i in 1:max(data$id)){
+    id_subset <- data[data$id == i, 'u']
+    u_vec[i] <- id_subset[1]
+  
+  }
+  u_df <- cbind(u_vec,1:max(data$id))
+  colnames(u_df) <- c('u','id')
+  u_df <- as.data.frame(u_df)
+  
+  seg <- c(0.1) #Performance metrics for top 10%
+
+  TP <- list()
+  TN <- list()
+  FP <- list()
+  FN <- list()
+  performance_df <- list()
+  for(i in 1:length(seg)){
+    true <- unique(data[order(data$u, decreasing = F),'id'])[1:round(length(unique(data$id))*seg[i])]
+      untrue <- unique(data[order(data$u, decreasing = F),'id'])[(round(length(unique(data$id))*seg[i])+1):length(unique(data$u))]
+      
+      #get family id of top 10% highest mLRC
+      mLRC_pred <- score[order(score$mLRC, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      mLRC_nonpred <- score[order(score$mLRC, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest uwLRC
+      uwLRC_pred <- score[order(score$uwLRC, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      uwLRC_nonpred <- score[order(score$uwLRC, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest Beta_ag
+      Beta_ag_pred <- score[order(score$Beta_ag, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      Beta_ag_nonpred <- score[order(score$Beta_ag, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest Beta_TH
+      Beta_TH_pred <- score[order(score$Beta_TH, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      Beta_TH_nonpred <- score[order(score$Beta_TH, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      #get family id of top 10% highest emp_mean
+      emp_mean_pred <- score[order(score$emp_mean, decreasing = T),'id'][1:round(length(unique(data$id))*seg[i])]
+      emp_mean_nonpred <- score[order(score$emp_mean, decreasing = T),'id'][(round(length(unique(data$id))*seg[i])+1):nrow(score)]
+      
+      ###PERFORMANCE METRICS
+      #True Positives
+      mLRC_TP <- sum(mLRC_pred %in% true)/length(mLRC_pred)
+      uwLRC_TP <- sum(uwLRC_pred %in% true)/length(uwLRC_pred)
+      Beta_ag_TP <- sum(Beta_ag_pred %in% true)/length(Beta_ag_pred)
+      Beta_TH_TP <- sum(Beta_TH_pred %in% true)/length(Beta_TH_pred)
+      emp_mean_TP <- sum(emp_mean_pred %in% true)/length(emp_mean_pred)
+      #True Negatives
+      mLRC_TN <- sum(mLRC_nonpred %in% untrue)/length(mLRC_nonpred)
+      uwLRC_TN <- sum(uwLRC_nonpred %in% untrue)/length(uwLRC_nonpred)
+      Beta_ag_TN <- sum(Beta_ag_nonpred %in% untrue)/length(Beta_ag_nonpred)
+      Beta_TH_TN <- sum(Beta_TH_nonpred %in% untrue)/length(Beta_TH_nonpred)
+      emp_mean_TN <- sum(emp_mean_nonpred %in% untrue)/length(emp_mean_nonpred)
+      #False Positive
+      mLRC_FP <- 1-mLRC_TN
+      uwLRC_FP <- 1-uwLRC_TN
+      Beta_ag_FP <- 1-Beta_ag_TN
+      Beta_TH_FP <- 1-Beta_TH_TN
+      emp_mean_FP <- 1-emp_mean_TN
+      #False Negative
+      mLRC_FN <- 1-mLRC_TP
+      uwLRC_FN <- 1-uwLRC_TP
+      Beta_ag_FN <- 1-Beta_ag_TP
+      Beta_TH_FN <- 1-Beta_TH_TP
+      emp_mean_FN <- 1-emp_mean_TP
+      
+      TP[[i]] <- c(mLRC_TP,uwLRC_TP,Beta_ag_TP,Beta_TH_TP,emp_mean_TP)
+      TN[[i]] <- c(mLRC_TN,uwLRC_TN,Beta_ag_TN,Beta_TH_TN,emp_mean_TN)
+      FP[[i]] <- c(mLRC_FP,uwLRC_FP,Beta_ag_FP,Beta_TH_FP,emp_mean_FP)
+      FN[[i]] <- c(mLRC_FN,uwLRC_FN,Beta_ag_FN,Beta_TH_FN,emp_mean_FN)
+      performance_df[[i]] <- data.frame(TP=TP[[i]],TN=TN[[i]],FP=FP[[i]],FN=FN[[i]], row.names = c('mLRC','uwLRC','Beta_ag','Beta_TH','emp_mean'))
+  }
+
+  #SPEARMAN (RANK-BASED) CORRELATIONS: SCORES VS TRUE
+  cor_mLRC <- cor(score[,'mLRC'],u_df$u, method = 'spearman')
+  cor_uwLRC <- cor(score[,'uwLRC'],u_df$u, method = 'spearman')
+  cor_Beta_ag <- cor(score[,'Beta_ag'],u_df$u, method = 'spearman')
+  cor_Beta_TH <- cor(score[,'Beta_TH'],u_df$u, method = 'spearman')
+  cor_emp_mean <- cor(score[,'emp_mean'],u_df$u, method = 'spearman')
+  cor_spearman_true <- c("cor_mLRC"=cor_mLRC, 'cor_uwLRC'=cor_uwLRC,'cor_Beta_ag'=cor_Beta_ag,'cor_Beta_TH'=cor_Beta_TH, 'cor_emp_mean'=cor_emp_mean)
+  
+  #SPEARMAN CORRELATIONS: SCORES VS SCORES
+  #let 1=mLRC, 2=uwLRC, 3=Beta_ag, 4=Beta_TH
+  cor12 <- cor(score[,'mLRC'],score[,'uwLRC'], method = 'spearman')
+  cor13 <- cor(score[,'mLRC'],score[,'Beta_ag'], method = 'spearman')
+  cor14 <- cor(score[,'mLRC'],score[,'Beta_TH'], method = 'spearman')
+  cor23 <- cor(score[,'uwLRC'],score[,'Beta_ag'], method = 'spearman')
+  cor24 <- cor(score[,'uwLRC'],score[,'Beta_TH'], method = 'spearman')
+  cor34 <- cor(score[,'Beta_ag'],score[,'Beta_TH'], method = 'spearman')
+  cor_spearman_scores <- c(cor12,cor13,cor14,cor23,cor24,cor34)
+  
+  
+  
+  #FINAL COMPILATION OF INFORMATION
+  out[[j]] <- list(mLRC_mod,estimates_ag,estimates_TH,score, performance_df, cor_spearman_true, cor_spearman_scores)#,data)
+  file <- out[[j]]
+  save(file, file = paste0(j,sim_name,'.rdata'))  # instead name name use hv or lv
+  print(out[[j]])
+}
+ 
+sim_cens_exp2 <- out #RENAME OUT WITH PARAMETERS
+save(sim_cens_exp2, file = 'simcensexp2.rData') #SAVE SIMULATION RESULTS
+
+
+
+```
+
+
+```{r}
+load("C:\\Users\\Marios\\OneDrive\\Υπολογιστής\\thesis\\Simulation_Scripts\\simulations\\simcensexp8.rData")
+
+fam_rates = numeric()
+for(i in 1:M){
+  fam_rates[i] = as.data.frame(sim_cens_exp8[[i]][[5]][[1]][1])
+  # print(fam_rates)
+}
+
+#### mLRC
+tpr_mLRC = numeric()
+for (i in 1:M) {
+  tpr_mLRC[i] = fam_rates[[i]][1]
+  # print(tpr_mLRC)
+}
+
+mLRC_mean = mean(tpr_mLRC)
+mLRC_sd = sd(tpr_mLRC)
+
+
+#### uwLRC
+tpr_uwLRC = numeric()
+for (i in 1:M) {
+  tpr_uwLRC[i] = fam_rates[[i]][2]
+  # print(tpr_uwLRC)
+}
+
+uwLRC_mean = mean(tpr_uwLRC)
+uwLRC_sd = sd(tpr_uwLRC)
+
+
+tpr_emp = numeric()
+for (i in 1:M) {
+  tpr_emp[i] = fam_rates[[i]][5]
+  # print(tpr_emp)
+}
+
+e_mean = mean(tpr_emp)
+e_sd = sd(tpr_emp)
+
+tpr_beta_ag = numeric()
+for (i in 1:M) {
+  tpr_beta_ag[i] = fam_rates[[i]][3]
+  # print(tpr_beta_ag)
+}
+
+beta_ag_mean = mean(tpr_beta_ag)
+beta_ag_sd = sd(tpr_beta_ag)
+
+tpr_betath = numeric()
+for (i in 1:M) {
+  tpr_betath[i] = fam_rates[[i]][4]
+  # print(tpr_betathRC)
+}
+
+betath_mean = mean(tpr_betath)
+betath_sd = sd(tpr_betath)
+
+### The plots are adjusted based on the family size of the simulation ###
+
+plot(density(tpr_uwLRC), col = "red",main = "TPR(8 members, censoring, full dataset)", ylim = c(0,18), xlim = c(0,0.6))
+lines(density(tpr_mLRC), col = "blue", main = "mLRC")
+lines(density(tpr_beta_ag), col = "magenta", main = "Beta_ag")
+lines(density(tpr_betath), col = "orange", main = "Beta threshold")
+lines(density(tpr_emp), col = "green", main = "Emperical Mean")
+points(uwLRC_mean, 10.1, col = "red", pch = 4)
+points(mLRC_mean, 8, col = "blue", pch = 4)
+points(beta_ag_mean, 6.5, col = "magenta", pch = 4)
+points(betath_mean, 5.9, col = "orange", pch = 4)
+points(e_mean, 10.8, col = "green", pch = 4)
+text(uwLRC_mean, 14, "0.10", col = "red")
+text(mLRC_mean, 8.9, "0.23", col = "blue")
+text(beta_ag_mean, 7.8, "0.33", col = "magenta")
+text(betath_mean, 8, "0.27", col = "orange")
+text(e_mean, 12.5, "0.10", col = "green")
+legend("topright", c("mLRC(μ: 0.23, σ: 0.06)", "uwLRC(μ: 0.10, σ: 0.04)", "Beta_ag(μ: 0.33, σ: 0.06)", "Beta_th(μ: 0.27, σ: 0.06)",  "emp_m(μ: 0.10, σ: 0.04)"), lty=1, cex=1,col=c("blue", "red", "magenta", "orange", "green"))
+
+
+
+```
+
+
+```{r}
+#### Plot density of family sizes after censoring
+set.seed(123)
+
+data <- as.data.frame(Percentile.data.cens(n=n, kvec=kvec, sigma = sigma, censoring = T))
+threshold <- threshold
+data_0.5 = data[!(data$d == 0 & data$perc < 0.5),  ]
+l = numeric()
+for(j in 1:length(unique(data_0.5$id))){
+  u_ids = unique(data_0.5$id)
+  # print(u_ids)
+  l[j] = nrow(data_0.5[data_0.5$id == u_ids[j],])
+}
+
+plot(density(l))
+hist(l,breaks = 8, col = "blue", main = "Family size percentile > 0.5", xlab = "family size")
+
+data <- as.data.frame(Percentile.data.cens(n=n, kvec=kvec, sigma = sigma, censoring = T))
+threshold <- threshold
+data = data[!(data$d == 0 & data$perc < threshold),  ]
+f_l = numeric()
+for(j in 1:length(unique(data$id))){
+  u_ids = unique(data$id)
+  f_l[j] = nrow(data_lrc[data_lrc$id == u_ids[j],])
+}
+plot(density(f_l))
+hist(l,breaks = 8, col = "blue", main = "Family sizes in Censored data", xlab = "family size")
+
+```
+
+
+
+
+
+
+
+

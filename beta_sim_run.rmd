@@ -82,13 +82,9 @@ for(j in 1:M){
     as.numeric(predict.ranef(estimates_ag, Yclus=Yclus, Deathclus=Deathclus, Bclus=Bclus, nsamples=5000))
   })
 
-  
-  
-# first column is??
 # 2nd column are values of beta 
 # 3rd column are values of phi
 # 4th column are values of s
-
 
 # Beta threshold scores
   #Beta_TH
@@ -125,12 +121,9 @@ for(j in 1:M){
     as.numeric(predict.ranef(estimates_TH, Yclus=Yclus, Deathclus=Deathclus,Bclus=Bclus, nsamples=5000))
   })
 # }
-# first column is??
 # 2nd column are values of beta 
 # 3rd column are values of phi
 # 4th column are values of s
-
-
 
 
   ##PERFORMANCE EVALUATION
@@ -251,9 +244,6 @@ for(j in 1:M){
 
 parents_fam_m500_beta <- out
 save(parents_fam_m500_beta, file = 'parents_fam_500_beta.rData')#SAVE SIMULATION RESULTS
-
-
-
 
 
 ```
