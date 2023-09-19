@@ -1,0 +1,161 @@
+---
+title: "Select Gompertz parameters"
+author: "Marios Christoforides s3361063"
+date: "2023-09-19"
+output: html_document
+---
+
+```{r}
+library(lubridate)
+library(plotrix)
+library(stats4)
+library(splines)
+library(unifed)
+
+###################################################
+#COHORT LIFETABLES (updated in nov. 2016 from CBS)#
+###################################################
+
+#EN#
+
+#MenLT<-read.table("cohort lifetable males prognostic.csv",sep=";",header=T)
+MenLT = read.csv("CBS prognostische sterftekansen mannen 0-99 jaar (opgevraagd mei 2022).csv", sep = ";")
+#View(MenLT)
+
+haz.men<-MenLT[,-1]
+haz.men<-rbind(0,haz.men)
+#View(haz.men)
+# haz.men = as.numeric(unlist(haz.men))
+# haz.men = as.data.frame(haz.men)
+haz.men[haz.men == "."] <- NA
+rownames(haz.men)<-c(0,0.1,seq(1,99,1))
+colnames(haz.men)<-seq(1850,2070,1)  ## column 0 after 2016
+
+#WOMEN#
+WomenLT = read.csv("CBS prognostische sterftekansen vrouwen 0-99 jaar (opgevraagd mei 2022).csv", sep = ";")
+#View(WomenLT)
+
+haz.women<-WomenLT[,-1]
+haz.women<-rbind(0,haz.women)
+haz.women[haz.women == "."] <- NA
+#View(haz.women)
+# haz.women = as.numeric(unlist(haz.women))
+# haz.women = as.data.frame(haz.women)
+
+rownames(haz.women)<-c(0,0.1,seq(1,99,1))
+colnames(haz.women)<-seq(1850,2070,1)   ## Columns 0 after 2016
+
+
+################################################
+#Function  for calculating conditional survival#
+################################################
+
+#age: starMting age
+#sex=1 (men), sex=2 (woman)
+#(we start in age+1 because at age surv=1)#
+#Maximum lifetime=110
+
+surv.cond = function(age,sex){  
+  if(age>99){
+    surv<-t(as.data.frame(rep(0,ncol(haz.men)))) # add row with 0
+    colnames(surv)=names(haz.men)
+    rownames(surv)<-110
+    surv
+}else{
+  index<-which(abs(age-as.numeric(rownames(haz.men)))==min(abs(age-as.numeric(rownames(haz.men))))) 
+  if(sex==1){
+    surv<-apply(haz.men[-c(1:(index)),],2, function(x){
+      exp(-c(0, cumsum(ifelse(is.na(x), 0, x))))
+	  })
+  }
+  else if(sex==2){
+    surv<-apply(haz.women[-c(1:(index)),],2, function(x)
+  	{
+  	  exp(-c(0, cumsum(ifelse(is.na(x), 0, x))))
+    	})
+  }
+  
+  surv<-rbind(surv,0)
+  surv= as.data.frame(surv)
+  colnames(surv)=names(haz.men)
+  rownames(surv)<-c(rownames(haz.men)[index:length(rownames(haz.men))],110)
+  surv
+}
+}
+
+
+###################
+#SURVIVAL AT BIRTH#
+###################
+
+survMen<-surv.cond(age=0,sex=1)
+survMen[which(rownames(survMen)==90),]
+
+survWomen<-surv.cond(age=0,sex=2)
+survWomen[which(rownames(survWomen)==90),]
+
+
+```
+
+# Normal model
+
+Thw following function calculates squared sum between empirical and model-based (normal) hazards, similar functions can be constructed for other parametric models, such as Gompertz. 
+
+```{r echo=T}
+library(VGAM)
+gomp_sim<-function(parms,datf){
+  shape<-parms[1] #shape alpha(insfluence peakness)
+  rate<-parms[2] #rate beta (influence spread)
+  x<-datf[,1] #a vector of ages
+  y<-datf[,2] #a vector of emirical hazards
+  minsom<-sum((y - dgompertz(x, shape, rate)/(1 - pgompertz(x, shape, rate)))^2)
+  minsom
+}
+
+# SHAPE AND RATE VALUES SHOULD BE LOW i.e 0.01
+# y = haz.men[,1]
+# x = 1:101
+# gomp_sim(c(0.01,0.01),cbind(x,y))
+
+
+
+```
+
+
+We keep information after the 20th year since the fitting of the model is way better and information before 20 years it is not the main point of interest.
+```{r echo=T}
+
+longlived_w<- haz.women
+haz_women <- c(0,longlived_w[,1])
+haz_women <- matrix(haz_women,ncol=1)
+rownames(haz_women) <- c(0:101)
+
+haz.w.NL = stepfun(x=seq(0,100),as.numeric(haz_women))
+
+
+t.integral = seq(20,101, by=1)
+y <- haz.w.NL(t.integral)
+x <- c(20:101)
+datf <- cbind(x,y)
+
+```
+Next, you find the optimal parameters c, mu and sigma so that you minimize the distance between the model-based and observed empirical hazards: 
+
+```{r echo=T}
+set.seed(1234)
+longlived_w<-optim(par = c(0.01,0.01), fn=gomp_sim, datf=datf)
+longlived_w
+
+```
+
+To visualize if the resulting fit is satistactory, you can plot the empirical and the model-based survival probability curves:
+```{r echo=T}
+longlived_w_empirical <- 1 - exp(-cumsum(y)) #This is the cumulative risk as given by the lifetable
+plot(x, 1 - pgompertz(x,longlived_w$par[1], longlived_w$par[2]), 
+     col="blue", lwd=2, ylim=c(0,1), xlab="Age", ylab="survival function", 
+     type="l")
+lines(x, 1-longlived_w_empirical, col="blue", lwd=2, ylim=c(0,0.1), xlab="Age", ylab="Penetrance", lty=2)
+legend("topleft", c("Model-based","Empirical"), lty=c(1,2), cex=0.6, box.lty=0, col="blue")
+
+
+```
